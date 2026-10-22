@@ -1,0 +1,12 @@
+services:
+  clipnest:
+    build: .
+    image: clipnest:local
+    container_name: clipnest
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      # 如果放在 Nginx / Caddy 等反向代理后面，取消下一行注释
+      # - TRUST_PROXY=1
+    restart: unless-stopped
