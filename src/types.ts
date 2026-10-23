@@ -8,14 +8,29 @@ export type Quality = {
   codec: string;
   bitrate: number;
   fps?: number;
+  directUrl: string;
+  filename: string;
 };
 
 export type ImageItem = {
   index: number;
   url: string;
+  directUrl: string;
+  filename: string;
   width: number;
   height: number;
   ext: string;
+  liveUrl: string;
+  liveDuration: number;
+  liveFilename: string;
+};
+
+export type Music = {
+  title: string;
+  author: string;
+  url: string;
+  cover: string;
+  filename: string;
 };
 
 export type Stats = {
@@ -33,10 +48,14 @@ export type ParseResult = {
   author: string;
   avatar: string;
   title: string;
+  baseName: string;
   cover: string;
+  coverFilename: string;
+  createdAt: number;
+  isLive: boolean;
   duration: number;
   stats: Stats;
   qualities: Quality[];
   images: ImageItem[];
-  music: { url: string; title: string } | null;
+  music: Music | null;
 };

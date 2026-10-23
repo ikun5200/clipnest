@@ -6,13 +6,17 @@ import {
   DownloadIcon,
   HeartIcon,
   ImageIcon,
+  InfoIcon,
+  LinkIcon,
+  MusicIcon,
   PlayIcon,
+  ShareIcon,
   SparkIcon,
   StarIcon,
   VideoIcon,
 } from './Icons';
 
-export type Busy = 'video' | 'selected' | 'all' | null;
+export type Busy = 'video' | 'selected' | 'all' | 'album' | null;
 
 type Props = {
   result: ParseResult;
@@ -22,10 +26,19 @@ type Props = {
   onToggle: (index: number) => void;
   onToggleAll: () => void;
   onDownloadVideo: () => void;
+  onCopyVideoLink: () => void;
+  onSaveVideoAlbum: () => void;
   onDownloadImage: (index: number) => void;
+  onSaveImageAlbum: (index: number) => void;
+  onDownloadLive: (index: number) => void;
+  onSaveSelectedAlbum: () => void;
+  onDownloadMusic: () => void;
+  onDownloadCover: () => void;
+  onSaveInfo: () => void;
   onDownloadSelected: () => void;
   onDownloadAll: () => void;
   busy: Busy;
+  shareSupported: boolean;
   onReset: () => void;
 };
 
@@ -37,16 +50,28 @@ export function ResultCard({
   onToggle,
   onToggleAll,
   onDownloadVideo,
+  onCopyVideoLink,
+  onSaveVideoAlbum,
   onDownloadImage,
+  onSaveImageAlbum,
+  onDownloadLive,
+  onSaveSelectedAlbum,
+  onDownloadMusic,
+  onDownloadCover,
+  onSaveInfo,
   onDownloadSelected,
   onDownloadAll,
   busy,
+  shareSupported,
   onReset,
 }: Props) {
   const isVideo = result.type === 'video';
   const currentQuality = result.qualities.find((item) => item.id === quality) || result.qualities[0];
   const allSelected =
     result.images.length > 0 && result.images.every((image) => selected.has(image.index));
+  const albumHint = shareSupported
+    ? '保存到相册会打开系统分享，选择“存储图像/视频”即可。'
+    : '当前浏览器不支持直接保存到相册，请使用下载；需要 HTTPS 和支持文件分享的浏览器。';
 
   return (
     <section className="result-card" aria-label="解析结果">
@@ -59,8 +84,8 @@ export function ResultCard({
           </div>
         )}
         <span className="type-badge">
-          {isVideo ? <VideoIcon /> : <ImageIcon />}
-          {isVideo ? '视频' : '图文'}
+          {result.isLive ? <PlayIcon /> : isVideo ? <VideoIcon /> : <ImageIcon />}
+          {result.isLive ? '实况' : isVideo ? '视频' : '图文'}
         </span>
         {isVideo && result.duration > 0 ? (
           <span className="duration-badge">{formatDuration(result.duration)}</span>
@@ -76,7 +101,9 @@ export function ResultCard({
           )}
           <span className="author-name">{result.author}</span>
           <span className="author-dot">·</span>
-          <span className="author-kind">{isVideo ? '视频作品' : `${result.images.length} 张图片`}</span>
+          <span className="author-kind">
+            {result.isLive ? '实况作品' : isVideo ? '视频作品' : `${result.images.length} 张图片`}
+          </span>
         </div>
 
         <h2 className="result-title">{result.title}</h2>
@@ -100,6 +127,27 @@ export function ResultCard({
             <StarIcon />
             {formatCount(result.stats.collect)}
           </span>
+        </div>
+
+        <div className="extras">
+          {result.music?.url ? (
+            <button
+              type="button"
+              className="extra-btn"
+              onClick={onDownloadMusic}
+              title={`${result.music.title}${result.music.author ? ` · ${result.music.author}` : ''}`}
+            >
+              <MusicIcon /> 背景音乐
+            </button>
+          ) : null}
+          {result.cover ? (
+            <button type="button" className="extra-btn" onClick={onDownloadCover}>
+              <ImageIcon /> 封面
+            </button>
+          ) : null}
+          <button type="button" className="extra-btn" onClick={onSaveInfo}>
+            <InfoIcon /> 保存信息
+          </button>
         </div>
       </div>
 
@@ -155,12 +203,40 @@ export function ResultCard({
               </>
             )}
           </button>
-          <p className="fineprint">原画为原始码率，文件可能较大；下载速度取决于源站。</p>
+
+          <div className="share-row">
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={onSaveVideoAlbum}
+              disabled={busy !== null || !shareSupported}
+              title={albumHint}
+            >
+              {busy === 'album' ? (
+                <>
+                  <span className="spinner" /> 准备中…
+                </>
+              ) : (
+                <>
+                  <ShareIcon /> 保存到相册
+                </>
+              )}
+            </button>
+            <button type="button" className="ghost-btn share-link-btn" onClick={onCopyVideoLink}>
+              <LinkIcon /> 复制直链
+            </button>
+          </div>
+          <p className="fineprint">
+            普通画质直连源站，不经过 NAS；大文件会复制直链，可用下载管理器保存；直链失败时回退
+            NAS。{albumHint}
+          </p>
         </div>
       ) : (
         <div className="panel">
           <div className="panel-head">
-            <h3>共 {result.images.length} 张</h3>
+            <h3>
+              共 {result.images.length} 张{result.isLive ? ' · 含实况' : ''}
+            </h3>
             <button type="button" className="text-btn" onClick={onToggleAll}>
               {allSelected ? '取消全选' : '全选'}
             </button>
@@ -169,6 +245,7 @@ export function ResultCard({
           <div className="image-grid">
             {result.images.map((image) => {
               const isSelected = selected.has(image.index);
+              const isLive = Boolean(image.liveUrl);
               return (
                 <div
                   key={image.index}
@@ -193,17 +270,49 @@ export function ResultCard({
                   />
                   <span className="image-check">{isSelected ? <CheckIcon /> : null}</span>
                   <span className="image-index">{image.index + 1}</span>
-                  <button
-                    type="button"
-                    className="image-download"
-                    aria-label={`下载第 ${image.index + 1} 张`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onDownloadImage(image.index);
-                    }}
-                  >
-                    <DownloadIcon />
-                  </button>
+                  <div className="image-actions">
+                    {shareSupported ? (
+                      <button
+                        type="button"
+                        className="image-action"
+                        aria-label={`保存第 ${image.index + 1} 张到相册`}
+                        disabled={busy !== null}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSaveImageAlbum(image.index);
+                        }}
+                      >
+                        <ShareIcon />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="image-action"
+                      aria-label={`下载第 ${image.index + 1} 张`}
+                      disabled={busy !== null}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDownloadImage(image.index);
+                      }}
+                    >
+                      <DownloadIcon />
+                    </button>
+                    {isLive ? (
+                      <button
+                        type="button"
+                        className="image-action"
+                        aria-label={`下载第 ${image.index + 1} 张实况视频`}
+                        disabled={busy !== null}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDownloadLive(image.index);
+                        }}
+                      >
+                        <PlayIcon />
+                      </button>
+                    ) : null}
+                  </div>
+                  {isLive ? <span className="live-badge">实况</span> : null}
                   <span className="image-dims">
                     {image.width && image.height ? `${image.width}×${image.height}` : ''}
                   </span>
@@ -232,21 +341,40 @@ export function ResultCard({
             <button
               type="button"
               className="download-btn"
-              onClick={onDownloadAll}
-              disabled={busy !== null}
+              onClick={onSaveSelectedAlbum}
+              disabled={!shareSupported || !selected.size || busy !== null}
+              title={albumHint}
             >
-              {busy === 'all' ? (
+              {busy === 'album' ? (
                 <>
-                  <span className="spinner" /> 打包中…
+                  <span className="spinner" /> 准备中…
                 </>
               ) : (
                 <>
-                  <DownloadIcon /> 全部下载
+                  <ShareIcon /> 保存选中到相册
                 </>
               )}
             </button>
           </div>
-          <p className="fineprint">全部下载会打包为 ZIP；点击右上角图标可单独下载一张。</p>
+          <button
+            type="button"
+            className="ghost-wide"
+            onClick={onDownloadAll}
+            disabled={busy !== null}
+          >
+            {busy === 'all' ? (
+              <>
+                <span className="spinner" /> 打包中…
+              </>
+            ) : (
+              <>
+                <DownloadIcon /> 全部下载 ZIP
+              </>
+            )}
+          </button>
+          <p className="fineprint">
+            单张图片直连源站；ZIP 由 NAS 打包。{albumHint}
+          </p>
         </div>
       )}
 

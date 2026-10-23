@@ -1,4 +1,12 @@
 import { AppError, fetchWithRetry, fetchWithTimeout } from './http.js';
+import {
+  baseName,
+  coverName,
+  imageName,
+  liveName,
+  musicName,
+  videoName,
+} from './filename.js';
 
 const MOBILE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -19,6 +27,7 @@ const MEDIA_HOSTS = [
   'snssdk.com',
   'amemv.com',
   'ixigua.com',
+  'zjcdn.com',
 ];
 
 const CACHE_TTL = 10 * 60 * 1000;
@@ -197,16 +206,16 @@ export async function fetchPlayCount(id) {
   }
 }
 
-function pickUrl(object) {
+export function pickUrl(object) {
   return Array.isArray(object?.url_list) ? object.url_list.find(Boolean) || '' : '';
 }
 
-function pickImageUrl(image) {
+export function pickImageUrl(image) {
   const list = Array.isArray(image?.url_list) ? image.url_list.filter(Boolean) : [];
   return list.find((url) => /\.(?:jpe?g|png)(?:\?|$)/i.test(url)) || list[0] || '';
 }
 
-function extFromUrl(url) {
+export function extFromUrl(url) {
   if (/\.png(?:\?|$)/i.test(url)) return 'png';
   if (/\.webp(?:\?|$)/i.test(url)) return 'webp';
   return 'jpg';
@@ -248,6 +257,7 @@ export function buildQualities(detail) {
         size: Number(playAddr.data_size) || 0,
         fps: Number(item.FPS) || 0,
         score,
+        directUrl: pickUrl(playAddr),
       });
     }
   });
@@ -269,6 +279,8 @@ export function buildQualities(detail) {
       codec: video.is_h265 ? 'H.265' : 'H.264',
       bitrate: 0,
       fps: Number(video.fps) || Number(list[0]?.FPS) || 0,
+      directUrl: '',
+      filename: videoName(detail, '原画'),
     });
   }
 
@@ -291,6 +303,8 @@ export function buildQualities(detail) {
       codec: group.h265 ? 'H.265' : 'H.264',
       bitrate: Math.round(group.bitrate / 1000),
       fps: group.fps,
+      directUrl: group.directUrl,
+      filename: videoName(detail, label),
     });
   }
 
@@ -307,6 +321,8 @@ export function buildQualities(detail) {
         codec: 'H.264',
         bitrate: 0,
         fps: Number(video.fps) || 0,
+        directUrl: direct,
+        filename: videoName(detail, '默认'),
       });
     }
   }
@@ -325,21 +341,41 @@ export function normalizeDetail(detail, playCount, sourceUrl) {
     (isImages ? pickImageUrl(detail.images[0]) : '') ||
     pickUrl(video.dynamic_cover);
   const statistics = detail.statistics || {};
+  const base = baseName(detail);
 
   const images = isImages
     ? detail.images
         .map((image, index) => {
           const url = pickImageUrl(image);
+          const liveUrl =
+            pickUrl(image.video?.play_addr) || pickUrl(image.live_photo?.play_addr) || '';
+          const ext = extFromUrl(url);
           return {
             index,
             url,
+            directUrl: url,
+            filename: imageName(detail, index, ext),
             width: Number(image.width) || 0,
             height: Number(image.height) || 0,
-            ext: extFromUrl(url),
+            ext,
+            liveUrl,
+            liveDuration: Math.round(
+              (Number(image.video?.duration) || Number(image.live_photo?.duration) || 0) / 1000,
+            ),
+            liveFilename: liveUrl ? liveName(detail, index) : '',
           };
         })
         .filter((image) => image.url)
     : [];
+
+  const qualities = isImages ? [] : buildQualities(detail);
+  const isLive = Boolean(
+    detail.aweme_type === 68 ||
+      detail.aweme_type === 150 ||
+      images.some((image) => image.liveUrl),
+  );
+  const musicUrl =
+    pickUrl(detail.music?.play_url) || (isImages ? pickUrl(video.play_addr) : '');
 
   return {
     type: isImages ? 'images' : 'video',
@@ -348,7 +384,11 @@ export function normalizeDetail(detail, playCount, sourceUrl) {
     author,
     avatar: pickUrl(detail.author?.avatar_thumb) || pickUrl(detail.author?.avatar_medium) || '',
     title,
+    baseName: base,
     cover,
+    coverFilename: coverName(detail).replace(/\.jpg$/, `.${extFromUrl(cover)}`),
+    createdAt: Number(detail.create_time) || 0,
+    isLive,
     duration: Math.round((Number(video.duration) || 0) / 1000),
     stats: {
       play: Number(playCount) || 0,
@@ -357,10 +397,17 @@ export function normalizeDetail(detail, playCount, sourceUrl) {
       share: Number(statistics.share_count) || 0,
       collect: Number(statistics.collect_count) || 0,
     },
-    qualities: isImages ? [] : buildQualities(detail),
+    qualities,
     images,
-    music: isImages
-      ? { url: pickUrl(video.play_addr), title: detail.music?.title || '' }
+    music: musicUrl
+      ? {
+          title: detail.music?.title || '',
+          author: detail.music?.author || '',
+          url: musicUrl,
+          cover:
+            pickUrl(detail.music?.cover_hd) || pickUrl(detail.music?.cover_large) || '',
+          filename: musicName(detail),
+        }
       : null,
   };
 }
@@ -424,12 +471,18 @@ export async function resolveVideoSource(id, quality) {
 
       const location = response.headers.get('location');
       if (response.status >= 300 && response.status < 400 && location) {
-        return assertMediaUrl(location);
+        try {
+          return assertMediaUrl(location);
+        } catch {
+          // Unknown CDN host: fall through to the detail's default play_addr.
+        }
       }
       if (response.ok && (response.headers.get('content-type') || '').includes('video/')) {
         return assertMediaUrl(playUrl);
       }
       await response.body?.cancel().catch(() => {});
+      const fallback = pickUrl(video.play_addr);
+      if (fallback) return assertMediaUrl(fallback);
       throw new AppError('原画地址获取失败，请稍后重试', 502);
     }
 
@@ -492,4 +545,36 @@ export async function getImage(id, index) {
     (ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg');
 
   return { buffer, contentType, ext };
+}
+
+export async function getLiveVideo(id, index) {
+  const detail = await fetchDetail(id);
+  const image = Array.isArray(detail.images) ? detail.images[index] : null;
+  const url =
+    pickUrl(image?.video?.play_addr) || pickUrl(image?.live_photo?.play_addr);
+  if (!url) throw new AppError('这个图片没有实况视频', 404);
+
+  const response = await safeFetch(
+    url,
+    {
+      headers: {
+        'User-Agent': DESKTOP_UA,
+        Accept: 'video/mp4,video/*;q=0.9,*/*;q=0.8',
+        Referer: 'https://www.douyin.com/',
+      },
+    },
+    { timeoutMs: 60000, maxRedirects: 3 },
+  );
+
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new AppError(`实况视频下载失败（${response.status}）`, 502);
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return {
+    buffer,
+    contentType: response.headers.get('content-type') || 'video/mp4',
+    ext: 'mp4',
+  };
 }

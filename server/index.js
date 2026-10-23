@@ -5,19 +5,33 @@ import { fileURLToPath } from 'node:url';
 import archiver from 'archiver';
 import { AppError } from './http.js';
 import {
+  extFromUrl,
   fetchDetail,
   fetchPlayCount,
   getImage,
+  getLiveVideo,
   normalizeDetail,
+  pickImageUrl,
+  pickUrl,
   resolveInput,
   resolveVideoSource,
   safeFetch,
 } from './parser.js';
+import {
+  coverName,
+  imageName,
+  liveName,
+  musicName,
+  videoName,
+  zipName,
+} from './filename.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
+const DESKTOP_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 app.disable('x-powered-by');
 if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
@@ -26,6 +40,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   res.setHeader('Permissions-Policy', 'clipboard-read=(self), clipboard-write=(self)');
   res.setHeader(
     'Content-Security-Policy',
@@ -33,9 +48,11 @@ app.use((req, res, next) => {
       "default-src 'self'",
       "img-src 'self' data: blob: https:",
       "media-src 'self' blob: https:",
-      "connect-src 'self'",
+      "connect-src 'self' https://*.douyinvod.com https://*.douyinpic.com https://*.douyinstatic.com https://*.byteimg.com https://*.pstatp.com https://*.snssdk.com https://*.douyin.com https://*.zjcdn.com https://*.ixigua.com https://*.amemv.com",
       "style-src 'self' 'unsafe-inline'",
       "script-src 'self'",
+      "worker-src 'self'",
+      "manifest-src 'self'",
       "font-src 'self' data:",
       "base-uri 'none'",
       "form-action 'self'",
@@ -46,6 +63,10 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '32kb' }));
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 function rateLimit({ windowMs, max }) {
   const hits = new Map();
@@ -86,14 +107,6 @@ function validateId(value) {
   const id = String(value || '');
   if (!/^\d{15,25}$/.test(id)) throw new AppError('作品 ID 不正确', 400);
   return id;
-}
-
-function safeName(value) {
-  const cleaned = String(value || '')
-    .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned || 'clip';
 }
 
 function contentDisposition(filename, fallback) {
@@ -166,6 +179,136 @@ app.post(
 );
 
 app.get(
+  '/api/link/video',
+  route(async (req, res) => {
+    const id = validateId(req.query.id);
+    const quality = typeof req.query.quality === 'string' ? req.query.quality : 'original';
+    if (!/^(original|gear-\d{1,3})$/.test(quality)) {
+      throw new AppError('画质参数不正确', 400);
+    }
+
+    const detail = await fetchDetail(id);
+    const source = await resolveVideoSource(id, quality);
+    const label = qualityLabel(detail, quality);
+    let size = 0;
+
+    if (quality.startsWith('gear-')) {
+      const index = Number(quality.slice(5));
+      size = Number(detail.video?.bit_rate?.[index]?.play_addr?.data_size) || 0;
+    } else {
+      try {
+        const head = await safeFetch(
+          source,
+          {
+            method: 'HEAD',
+            headers: {
+              'User-Agent': DESKTOP_UA,
+              Accept: '*/*',
+              Referer: 'https://www.douyin.com/',
+            },
+          },
+          { timeoutMs: 15000, maxRedirects: 3 },
+        );
+        size = Number(head.headers.get('content-length')) || 0;
+        await head.body?.cancel().catch(() => {});
+      } catch {
+        size = 0;
+      }
+    }
+
+    res.json({
+      ok: true,
+      url: source,
+      filename: videoName(detail, label),
+      size,
+      original: quality === 'original',
+      contentType: 'video/mp4',
+    });
+  }),
+);
+
+app.get(
+  '/api/link/image',
+  route(async (req, res) => {
+    const id = validateId(req.query.id);
+    const index = Number(req.query.index);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new AppError('图片序号不正确', 400);
+    }
+
+    const detail = await fetchDetail(id);
+    const image = Array.isArray(detail.images) ? detail.images[index] : null;
+    if (!image) throw new AppError('图片不存在', 404);
+
+    const url = pickImageUrl(image);
+    if (!url) throw new AppError('图片地址为空', 502);
+    const ext = extFromUrl(url);
+
+    res.json({
+      ok: true,
+      url,
+      filename: imageName(detail, index, ext),
+      index,
+      contentType:
+        ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg',
+    });
+  }),
+);
+
+app.get(
+  '/api/download/live',
+  route(async (req, res) => {
+    const id = validateId(req.query.id);
+    const index = Number(req.query.index);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new AppError('图片序号不正确', 400);
+    }
+
+    const detail = await fetchDetail(id);
+    const live = await getLiveVideo(id, index);
+
+    res.setHeader('Content-Type', live.contentType);
+    res.setHeader('Content-Length', live.buffer.length);
+    res.setHeader(
+      'Content-Disposition',
+      contentDisposition(liveName(detail, index), `clip-${id}-${index + 1}-live.mp4`),
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(live.buffer);
+  }),
+);
+
+app.get(
+  '/api/download/music',
+  route(async (req, res) => {
+    const id = validateId(req.query.id);
+    const detail = await fetchDetail(id);
+    const url = pickUrl(detail.music?.play_url) || pickUrl(detail.video?.play_addr);
+    if (!url) throw new AppError('这个作品没有背景音乐', 404);
+
+    await streamMedia(req, res, url, musicName(detail), `clip-${id}-music.mp3`);
+  }),
+);
+
+app.get(
+  '/api/download/cover',
+  route(async (req, res) => {
+    const id = validateId(req.query.id);
+    const detail = await fetchDetail(id);
+    const url =
+      pickUrl(detail.video?.cover) ||
+      pickUrl(detail.video?.origin_cover) ||
+      pickUrl(detail.video?.dynamic_cover) ||
+      pickImageUrl(detail.images?.[0]);
+    if (!url) throw new AppError('这个作品没有封面', 404);
+
+    const ext = extFromUrl(url);
+    const filename = coverName(detail).replace(/\.jpg$/, `.${ext}`);
+    await streamMedia(req, res, url, filename, `clip-${id}-cover.${ext}`);
+  }),
+);
+
+app.get(
   '/api/download/video',
   route(async (req, res) => {
     const id = validateId(req.query.id);
@@ -176,9 +319,8 @@ app.get(
 
     const detail = await fetchDetail(id);
     const source = await resolveVideoSource(id, quality);
-    const base = safeName(`${detail.author?.nickname || 'clip'}-${detail.desc || id}`).slice(0, 64);
     const label = qualityLabel(detail, quality);
-    const filename = `${base}-${label}.mp4`;
+    const filename = videoName(detail, label);
     const fallback = `clip-${id}-${quality.replace(/[^a-z0-9-]/gi, '')}.mp4`;
 
     await streamMedia(req, res, source, filename, fallback);
@@ -196,8 +338,7 @@ app.get(
 
     const detail = await fetchDetail(id);
     const image = await getImage(id, index);
-    const base = safeName(`${detail.author?.nickname || 'clip'}-${detail.desc || id}`).slice(0, 64);
-    const filename = `${base}-${String(index + 1).padStart(2, '0')}.${image.ext}`;
+    const filename = imageName(detail, index, image.ext);
     const fallback = `clip-${id}-${index + 1}.${image.ext}`;
 
     res.setHeader('Content-Type', image.contentType);
@@ -231,9 +372,8 @@ app.get(
     }
     if (!indices.length) throw new AppError('没有选择要下载的图片', 400);
 
-    const base = safeName(`${detail.author?.nickname || 'clip'}-${detail.desc || id}`).slice(0, 64);
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', contentDisposition(`${base}-图片.zip`, `clip-${id}-images.zip`));
+    res.setHeader('Content-Disposition', contentDisposition(zipName(detail), `clip-${id}-images.zip`));
     res.setHeader('Cache-Control', 'no-store');
 
     const archive = archiver('zip', { zlib: { level: 9 } });
@@ -251,9 +391,15 @@ app.get(
     for (const index of indices) {
       try {
         const image = await getImage(id, index);
-        archive.append(image.buffer, {
-          name: `${base}-${String(index + 1).padStart(2, '0')}.${image.ext}`,
-        });
+        archive.append(image.buffer, { name: imageName(detail, index, image.ext) });
+        try {
+          const live = await getLiveVideo(id, index);
+          archive.append(live.buffer, { name: liveName(detail, index) });
+        } catch (liveError) {
+          if (liveError.status !== 404) {
+            errors.push(`#${index + 1} 实况: ${liveError.message}`);
+          }
+        }
       } catch (error) {
         errors.push(`#${index + 1}: ${error.message}`);
       }
@@ -268,6 +414,22 @@ app.get(
 );
 
 const dist = path.join(__dirname, '..', 'dist');
+
+app.get('/sw.js', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(dist, 'sw.js'), (error) => {
+    if (error) next(error);
+  });
+});
+
+app.get('/manifest.webmanifest', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(dist, 'manifest.webmanifest'), (error) => {
+    if (error) next(error);
+  });
+});
+
 app.use('/assets', express.static(path.join(dist, 'assets'), { maxAge: '1y', immutable: true }));
 app.use(express.static(dist, { index: false, maxAge: '1h' }));
 
@@ -276,9 +438,13 @@ app.get('*', (req, res, next) => {
     next();
     return;
   }
-  res.sendFile(path.join(dist, 'index.html'), (error) => {
-    if (error) next(error);
-  });
+  res.sendFile(
+    path.join(dist, 'index.html'),
+    { headers: { 'Cache-Control': 'no-cache' } },
+    (error) => {
+      if (error) next(error);
+    },
+  );
 });
 
 app.use((error, req, res, _next) => {
