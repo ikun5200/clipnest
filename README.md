@@ -99,10 +99,17 @@ npm start
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/parse` | 请求体 `{ "text": "分享文案或链接" }` |
-| `GET` | `/api/download/video?id=&quality=` | `quality` 为 `original` 或 `gear-N` |
+| `GET` | `/api/link/video?id=&quality=` | 返回源站直链、文件名、大小；`quality` 为 `original` 或 `gear-N` |
+| `GET` | `/api/link/image?id=&index=` | 返回图片源站直链和文件名 |
+| `GET` | `/api/download/video?id=&quality=` | 服务端代理下载（直链失败或大文件兜底） |
 | `GET` | `/api/download/image?id=&index=` | 下载单张图片 |
 | `GET` | `/api/download/images?id=&indices=0,1,2` | 打包下载；省略 `indices` 表示全部 |
+| `GET` | `/api/download/live?id=&index=` | 实况作品的动态片段 |
+| `GET` | `/api/download/music?id=` | 背景音乐 |
+| `GET` | `/api/download/cover?id=` | 封面 |
 | `GET` | `/api/health` | 健康检查 |
+
+直链接口返回的是源站签名 URL，建议获取后尽快使用；签名过期后重新调用即可。
 
 API 供内置前端使用，未提供鉴权。若公开部署，建议在反向代理层增加访问控制。
 
