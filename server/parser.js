@@ -195,7 +195,7 @@ export async function fetchPlayCount(id) {
         },
         redirect: 'follow',
       },
-      8000,
+      3500,
     );
     if (!response.ok) return 0;
     const html = await response.text();
